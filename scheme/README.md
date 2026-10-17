@@ -453,7 +453,13 @@ alu_oe rd_oe
 <a id="sec-6"></a>
 # 6. ALU Segment
 
-Перед ALU находятся два входных мультиплексора.
+Перед ALU находятся три входных мультиплексора:
+
+- `ALU_L_MUX` — левый 32-битный операнд;
+- `ALU_R_MUX` — правый 32-битный операнд;
+- `ALU_STATE_MUX` — дополнительный 1-битный вход состояния, выбирающий `Carry` или `EAM`.
+
+`Carry` и `EAM` в текущей версии схемы **не поступают напрямую в `Next Microcommand Logic`**. Они являются состояниями datapath и подаются в ALU через третий MUX.
 
 ---
 
@@ -502,6 +508,25 @@ X  + 0 + 1
 ```text
 sel_rt : 2 bits
 ```
+
+---
+
+## 6.3. ALU_STATE_MUX
+
+Третий MUX выбирает одно из двух 1-битных состояний процессора:
+
+```text
+Carry
+EAM
+```
+
+Поэтому:
+
+```text
+sel_ce : 1 bit
+```
+
+Его выход является дополнительным 1-битным входом ALU. Он не является ещё одним 32-битным операндом: конкретная ALU-операция интерпретирует этот вход как требуемое состояние (`Carry` или `EAM`). Внутренняя логика использования этого входа на основной RTL-схеме не детализируется.
 
 ---
 
@@ -679,10 +704,12 @@ Carry — 1-битное состояние.
 Связи должны концептуально различаться:
 
 ```text
-ALU -> Carry          carry-out
-Carry -> ALU          carry-in / shift-through-carry
-Carry -> Control Unit condition/status
+ALU -> Carry                  carry-out
+Carry -> ALU_STATE_MUX -> ALU
+EAM   -> ALU_STATE_MUX -> ALU
 ```
+
+В текущей версии схемы `Carry` не подаётся напрямую в `Next Microcommand Logic`; при необходимости он используется ALU через третий входной MUX.
 
 Запись:
 
@@ -721,7 +748,7 @@ eam
 
 снимает значение с Data Stack и устанавливает EAM.
 
-EAM поступает в ALU как состояние режима арифметики, а не как обычный 32-битный операнд.
+EAM поступает в `ALU_STATE_MUX` и далее в ALU как 1-битное состояние, а не как обычный 32-битный операнд. В текущей версии схемы EAM не является отдельным входом `Next Microcommand Logic`.
 
 ---
 
@@ -751,7 +778,7 @@ EAM поступает в ALU как состояние режима арифм�
              Control Signals
 ```
 
-Также в `Next Microcommand Logic` поступают необходимые condition/status сигналы datapath.
+Также в `Next Microcommand Logic` поступают только те condition/status сигналы datapath, которые действительно нужны для выбора следующей микрокоманды. `Carry` и `EAM` в эту группу больше не входят: они маршрутизируются через `ALU_STATE_MUX` непосредственно в ALU.
 
 ---
 
@@ -817,16 +844,18 @@ data    = microinstruction
 
 ## 9.5. Conditions
 
-Для сложных микропрограмм CU может использовать состояния вроде:
+Для сложных микропрограмм CU может использовать condition-сигналы, необходимые для ветвления микропрограммы, например:
 
 ```text
-Carry
-EAM
 A[0]
 A[31]
 T[0]
-sign / zero result
+T == 0
+T sign
+R != 0
 ```
+
+`Carry` и `EAM` здесь намеренно отсутствуют: в актуальной схеме они идут через третий MUX в ALU, а не в `Next Microcommand Logic`.
 
 Эти проверки относятся к condition path Control Unit.
 
@@ -847,13 +876,13 @@ sign / zero result
 
 ```text
 +-----------------------------+----------------------+
-| Datapath control — 29 bits  | Next control — 11   |
+| Datapath control — 30 bits  | Next control — 10   |
 +-----------------------------+----------------------+
 ```
 
-29-битная операционная часть определена подробно.
+30-битная операционная часть определена подробно.
 
-11-битная часть зарезервирована для управления последовательностью микрокоманд (`Next Microcommand Logic`). Точное внутреннее кодирование этой части на RTL-схеме не детализируется.
+10-битная часть зарезервирована для управления последовательностью микрокоманд (`Next Microcommand Logic`). Точное внутреннее кодирование этой части на RTL-схеме не детализируется.
 
 ---
 
@@ -886,19 +915,22 @@ sign / zero result
 
 ---
 
-## 11.2. MUX selects — 6 bits
+## 11.2. MUX selects — 7 bits
 
 ```text
 sel_lf : 2 bits
 sel_rt : 2 bits
 sel_s  : 1 bit
 sel_r  : 1 bit
+sel_ce : 1 bit
 ```
+
+`sel_ce` управляет третьим MUX ALU и выбирает, какое 1-битное состояние поступает в ALU: `Carry` или `EAM`.
 
 Итого:
 
 ```text
-6 bits
+7 bits
 ```
 
 Пример кодирования ALU MUX:
@@ -915,6 +947,10 @@ sel_rt:
 01 T
 10 B
 11 MDR
+
+sel_ce:
+0 Carry
+1 EAM
 ```
 
 Кодирование `sel_s` и `sel_r` зависит только от порядка двух входов соответствующих MUX.
@@ -1015,19 +1051,19 @@ rd_oe  : 1
 
 ```text
 latch_*          11
-MUX selects       6
+MUX selects       7
 alu_op            4
 op_dsp/op_rsp     4
 mem_re/mem_we     2
 alu_oe/rd_oe      2
 -------------------
-TOTAL             29 bits
+TOTAL             30 bits
 ```
 
 Полная микроинструкция:
 
 ```text
-29 + 11 = 40 bits
+30 + 10 = 40 bits
 ```
 
 ---
@@ -1441,7 +1477,7 @@ Datapath был проверен по всем группам F32A ISA:
 - arithmetic;
 - bitwise operations;
 - shifts;
-- EAM/Carry;
+- EAM/Carry через `ALU_STATE_MUX`;
 - multiply step;
 - divide step;
 - return stack;
@@ -1525,7 +1561,7 @@ X OR Y = ~(~X AND ~Y)
 
 ### Зачем SRC/SLC?
 
-Для переноса одного бита между регистрами через Carry без масок и специальных операций `SET_BIT`.
+Для переноса одного бита между регистрами через Carry без масок и специальных операций `SET_BIT`. Сам `Carry` поступает в ALU через `ALU_STATE_MUX`.
 
 ### Зачем alu_oe и rd_oe?
 
@@ -1541,7 +1577,7 @@ Memory-mapped I/O использует то же адресное простра
 
 ### Почему 40 бит?
 
-29 бит требуются известным управляющим сигналам datapath. Ещё 11 бит отведены под управление последовательностью микрокоманд. Такая ширина достаточна для выбранной реализации и оставляет структуру CU простой.
+30 бит требуются известным управляющим сигналам datapath, включая `sel_ce` третьего MUX ALU. Ещё 10 бит отведены под управление последовательностью микрокоманд. Такая ширина достаточна для выбранной реализации и оставляет структуру CU простой.
 
 ---
 
@@ -1567,10 +1603,9 @@ RAM/MM_IN -> RD_MUX -> Data Bus
 Data Bus -> RAM/MM_OUT
 
 ALU
-S/A/R/PC -> ALU_L_MUX
-0/T/B/MDR -> ALU_R_MUX
-            -> ALU
-            -> Data Bus
+S/A/R/PC -> ALU_L_MUX ----\
+0/T/B/MDR -> ALU_R_MUX ----+-> ALU -> Data Bus
+Carry/EAM -> ALU_STATE_MUX -/
 
 STACKS
 T,S + DS_MEM + DSP
@@ -1582,7 +1617,7 @@ ALU -> [alu_oe] -> Data Bus
 RD_MUX -> [rd_oe] -> Data Bus
 
 MICROINSTRUCTION
-40 bits = 29 datapath + 11 next-control
+40 bits = 30 datapath + 10 next-control
 ```
 
 ---
